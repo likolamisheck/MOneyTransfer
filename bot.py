@@ -105,8 +105,9 @@ def calc_block(pairs) -> str:
 class Form(StatesGroup):
     waiting_kw_amount = State()
     waiting_rub_amount = State()
+from aiogram.client.default import DefaultBotProperties
 
-bot = Bot(TOKEN, parse_mode="HTML")
+bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(bot, storage=MemoryStorage())
 
 # ---- Handlers ----
