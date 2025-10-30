@@ -9,7 +9,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -35,8 +35,6 @@ FEE_BRACKETS = [
     (100,450,25),(500,1500,50),(1600,3400,100),(3500,6400,150),
     (6500,10000,325),(10001,15000,500),(15001,20000,700),(20001,40000,1000)
 ]
-MIN_K = FEE_BRACKETS[0][0]
-MAX_K = FEE_BRACKETS[-1][1]
 
 def fee_for_kw(amount_k: float):
     for lo, hi, fee in FEE_BRACKETS:
@@ -143,18 +141,15 @@ async def google_rate(m:Message,state:FSMContext):
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(update=update)
+    await dp.feed_update(bot, update)  # <-- fix for aiogram 3.x
     return web.Response()
 
-async def on_startup(app): 
-    await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
-
-async def on_cleanup(app): 
-    await bot.session.close()
+async def on_startup(app): await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
+async def on_cleanup(app): await bot.session.close()
 
 app = web.Application()
-app.router.add_post(f"/{TOKEN}",handle)
+app.router.add_post(f"/{TOKEN}", handle)
 app.on_startup.append(on_startup)
 app.on_cleanup.append(on_cleanup)
 
-web.run_app(app,port=int(os.environ.get("PORT",5000)))
+web.run_app(app, port=int(os.environ.get("PORT",5000)))
