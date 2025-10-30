@@ -29,6 +29,8 @@ if not TOKEN or not SHEET_URL or not BASE_URL:
 
 TIMEOUT = 10.0
 
+AGENT_PHONE = "+79938916814"
+
 # -------------------- Fee table (Kwacha) --------------------
 FEE_BRACKETS = [
     (100,    450,    25),
@@ -64,18 +66,15 @@ def derive_csv_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     path = parsed.path
     q = dict(urllib.parse.parse_qsl(parsed.query))
-    # published HTML -> CSV
     if "/spreadsheets/d/e/" in path and "/pubhtml" in path:
         path = path.replace("/pubhtml", "/pub")
         q["output"] = "csv"
         new_q = urllib.parse.urlencode(q)
         return urllib.parse.urlunparse(parsed._replace(path=path, query=new_q))
-    # published -> ensure csv
     if "/spreadsheets/d/e/" in path and "/pub" in path:
         q["output"] = "csv"
         new_q = urllib.parse.urlencode(q)
         return urllib.parse.urlunparse(parsed._replace(query=new_q))
-    # normal share link -> export csv
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", path)
     if m:
         sheet_id = m.group(1)
@@ -86,227 +85,163 @@ def derive_csv_url(url: str) -> str:
 CSV_URL = derive_csv_url(SHEET_URL)
 
 async def fetch_rate_from_sheet():
-    """Return (rub_per_zmw, updated_text). A1 in the sheet must contain a single number."""
     async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
-        r = await client.get(CSV_URL, headers={"Accept": "text/csv, text/plain;q=0.9, */*;q=0.1"})
+        r = await client.get(CSV_URL, headers={"Accept": "text/csv"})
         r.raise_for_status()
         txt = r.text.strip()
-        if "<html" in txt.lower():
-            raise RuntimeError("Got HTML instead of CSV. Check publish/share settings.")
         m = re.search(r'[-+]?\d+(?:[.,]\d+)?', txt)
         if not m:
-            raise RuntimeError(f"Could not parse numeric rate from: {txt[:120]!r}")
+            raise RuntimeError(f"Could not parse rate from: {txt[:80]}")
         rub_per_zmw = float(m.group(0).replace(',', '.'))
         updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         return rub_per_zmw, updated
 
-# -------------------- Pretty UI helpers --------------------
-def menu_keyboard() -> ReplyKeyboardMarkup:
+# -------------------- UI --------------------
+def menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📈 Google rate")],
             [KeyboardButton(text="💸 Receive Kwacha"), KeyboardButton(text="💶 Receive Rubles")],
-            [KeyboardButton(text="ℹ️ Fees")]
+            [KeyboardButton(text="ℹ️ Fees")],
         ],
-        resize_keyboard=True,
-        input_field_placeholder="Choose an option…",
-        selective=False,
-        is_persistent=True,
+        resize_keyboard=True
     )
 
-def header(title: str) -> str:
-    return f"<b>{title}</b>\n"
+def header(title): return f"<b>{title}</b>\n"
 
-def line(label: str, value: str, width: int = 18) -> str:
-    return f"{label:<{width}} {value}\n"
+def line(label, value, width=18): return f"{label:<{width}} {value}\n"
 
-def calc_block(pairs) -> str:
-    body = "".join(line(lbl, val) for lbl, val in pairs)
-    return f"<pre>{body}</pre>"
+def calc_block(pairs): return f"<pre>{''.join(line(k,v) for k,v in pairs)}</pre>"
 
 # -------------------- FSM --------------------
 class Form(StatesGroup):
     waiting_kw_amount = State()
     waiting_rub_amount = State()
 
-# -------------------- Bot setup --------------------
+# -------------------- BOT --------------------
 bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
-# -------------------- Handlers --------------------
 @dp.message(Command("start"))
-async def start_cmd(m: types.Message, state: FSMContext):
+async def start_cmd(m: Message, state: FSMContext):
     await state.clear()
-    text = (
+    await m.answer(
         header("🚀 MONEY TRANSFER — Quick Menu") +
         "Use the buttons below anytime:\n"
         "• 📈 Google rate — show ZMW↔RUB\n"
         "• 💸 Receive Kwacha — enter K to pay out (we add fee & show RUB to send)\n"
         "• 💶 Receive Rubles — enter RUB to pay out (we add fee in K)\n"
-        "• ℹ️ Fees — see fee brackets\n"
+        "• ℹ️ Fees — see fee brackets",
+        reply_markup=menu_keyboard()
     )
-    await m.answer(text, reply_markup=menu_keyboard())
 
 @dp.message(F.text == "ℹ️ Fees")
-async def fees(m: types.Message, state: FSMContext):
+async def fees(m: Message, state: FSMContext):
     await state.clear()
     lines = ["<b>📋 Fee table (Kwacha)</b>"]
     for lo, hi, fee in FEE_BRACKETS:
-        lines.append(f"{lo:,}–{hi:,} K  →  <b>{fee:,} K</b>")
+        lines.append(f"{lo:,}–{hi:,} K → <b>{fee:,} K</b>")
     await m.answer("\n".join(lines), reply_markup=menu_keyboard())
 
 @dp.message(F.text == "📈 Google rate")
-async def google_rate(m: types.Message, state: FSMContext):
+async def google_rate(m: Message, state: FSMContext):
     await state.clear()
-    try:
-        rub_per_zmw, updated = await fetch_rate_from_sheet()
-    except Exception as e:
-        print("[rate fetch error]", repr(e))
-        return await m.answer("Sorry, I couldn’t fetch the Google rate right now. Try again shortly.",
-                              reply_markup=menu_keyboard())
-    zmw_per_rub = (1.0 / rub_per_zmw) if rub_per_zmw else math.inf
-    txt = (
-        header("📈 Current Google rate") +
-        calc_block([
-            ("1 ZMW → RUB", f"{rub_per_zmw:.4f}"),
-            ("1 RUB → ZMW", f"{zmw_per_rub:.4f}"),
-            ("Updated",      updated),
-            ("Source",       "Google Sheet (CSV)"),
-        ])
-    )
+    rub_per_zmw, updated = await fetch_rate_from_sheet()
+    zmw_per_rub = 1 / rub_per_zmw if rub_per_zmw else math.inf
+    txt = header("📈 Current Google rate") + calc_block([
+        ("1 ZMW → RUB", f"{rub_per_zmw:.4f}"),
+        ("1 RUB → ZMW", f"{zmw_per_rub:.4f}"),
+        ("Updated", updated),
+        ("Source", "Google Sheet"),
+    ])
     await m.answer(txt, reply_markup=menu_keyboard())
 
-# ----- Receive Kwacha flow -----
+# 💸 Receive Kwacha
 @dp.message(F.text == "💸 Receive Kwacha")
-async def choose_kw(m: types.Message, state: FSMContext):
+async def choose_kw(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_kw_amount)
-    txt = (
+    await m.answer(
         header("💸 Receive Kwacha") +
-        "Enter the Kwacha amount the recipient should get "
-        f"(supported {MIN_K}–{MAX_K} K), e.g. <code>6500</code>."
+        f"Enter the Kwacha amount the recipient should get ({MIN_K}–{MAX_K} K).",
+        reply_markup=menu_keyboard()
     )
-    await m.answer(txt, reply_markup=menu_keyboard())
 
 @dp.message(Form.waiting_kw_amount)
-async def handle_kw_amount(m: types.Message, state: FSMContext):
+async def handle_kw(m: Message, state: FSMContext):
     try:
         want_k = parse_amount(m.text)
-    except ValueError:
-        return await m.answer("Please enter a number, e.g. <code>6500</code>.", reply_markup=menu_keyboard())
-
+    except:
+        return await m.answer("Please enter a valid number, e.g. 6500.")
     if want_k < MIN_K or want_k > MAX_K:
-        return await m.answer(
-            f"Amount {fmt_money(want_k,'K')} is outside supported fee ranges ({MIN_K}–{MAX_K} K).",
-            reply_markup=menu_keyboard()
-        )
+        return await m.answer(f"Amount {fmt_money(want_k,'K')} is outside supported range ({MIN_K}-{MAX_K} K).")
 
-    fee_k, bracket = fee_for_kw(want_k)
-    if fee_k is None:
-        return await m.answer("No matching fee bracket for that amount.", reply_markup=menu_keyboard())
-
-    try:
-        rub_per_zmw, updated = await fetch_rate_from_sheet()
-    except Exception as e:
-        print("[rate fetch error]", repr(e))
-        return await m.answer("Sorry, I couldn’t fetch the Google rate right now.", reply_markup=menu_keyboard())
-
+    fee_k, (lo, hi) = fee_for_kw(want_k)
+    rub_per_zmw, updated = await fetch_rate_from_sheet()
     total_k = want_k + fee_k
     rub_to_send = total_k * rub_per_zmw
-    lo, hi = bracket
 
-    txt = (
-        header("✅ Quote — RUB to send (K payout)") +
-        calc_block([
-            ("Recipient gets",  fmt_money(want_k, "K")),
-            ("Fee",             f"{fmt_money(fee_k,'K')}  (bracket {lo:,}–{hi:,} K)"),
-            ("Total basis",     fmt_money(total_k, "K")),
-            ("Rate used",       f"1 ZMW = {rub_per_zmw:.4f} RUB (Google)"),
-            ("You send",        fmt_money(rub_to_send, "RUB")),
-            ("Updated",         updated),
-        ]) +
-        "\nUse the buttons below for another quote."
+    message_text = (
+        f"CLIENT wants to receive {fmt_money(want_k,'ZMW')}.\n\n"
+        f"Transfer fee: {fmt_money(fee_k,'ZMW')} (because your amount is in the {lo:,}–{hi:,} range)\n"
+        f"Total to send: {fmt_money(total_k,'ZMW')} including the fee\n"
+        f"Exchange rate used: 1 ZMW = {rub_per_zmw:.4f} RUB\n"
+        f"Equivalent in Rubles: {fmt_money(rub_to_send,'RUB')}\n"
+        f"Updated: {updated}\n\n"
+        f"Click below to open WhatsApp to initiate the transaction 👇"
     )
+
+    encoded = urllib.parse.quote(message_text)
+    wa_link = f"https://wa.me/{AGENT_PHONE.replace('+','')}?text={encoded}"
+
     await state.clear()
-    await m.answer(txt, reply_markup=menu_keyboard())
+    await m.answer(message_text + f"\n\n👉 <a href='{wa_link}'>Contact agent on WhatsApp</a>", reply_markup=menu_keyboard())
 
-# ----- Receive Rubles flow -----
+# 💶 Receive Rubles
 @dp.message(F.text == "💶 Receive Rubles")
-async def choose_rub(m: types.Message, state: FSMContext):
+async def choose_rub(m: Message, state: FSMContext):
     await state.set_state(Form.waiting_rub_amount)
-    txt = (
-        header("💶 Receive Rubles") +
-        "Enter the Ruble amount the recipient should get, e.g. <code>10000</code>."
-    )
-    await m.answer(txt, reply_markup=menu_keyboard())
+    await m.answer(header("💶 Receive Rubles") + "Enter the Ruble amount the client should get, e.g. 10000.")
 
 @dp.message(Form.waiting_rub_amount)
-async def handle_rub_amount(m: types.Message, state: FSMContext):
+async def handle_rub(m: Message, state: FSMContext):
     try:
         want_rub = parse_amount(m.text)
-    except ValueError:
-        return await m.answer("Please enter a number, e.g. <code>10000</code>.", reply_markup=menu_keyboard())
-
-    try:
-        rub_per_zmw, updated = await fetch_rate_from_sheet()
-    except Exception as e:
-        print("[rate fetch error]", repr(e))
-        return await m.answer("Sorry, I couldn’t fetch the Google rate right now.", reply_markup=menu_keyboard())
-
-    zmw_per_rub = 1.0 / rub_per_zmw if rub_per_zmw else math.inf
+    except:
+        return await m.answer("Please enter a valid number, e.g. 10000.")
+    rub_per_zmw, updated = await fetch_rate_from_sheet()
+    zmw_per_rub = 1 / rub_per_zmw
     base_k = want_rub * zmw_per_rub
-
     if base_k < MIN_K or base_k > MAX_K:
-        return await m.answer(
-            f"The Kwacha equivalent ({fmt_money(base_k,'K')}) is outside supported fee ranges "
-            f"({MIN_K}–{MAX_K} K). Adjust amount.",
-            reply_markup=menu_keyboard()
-        )
+        return await m.answer(f"The equivalent {fmt_money(base_k,'K')} is outside supported fee range.")
 
-    fee_k, bracket = fee_for_kw(base_k)
-    if fee_k is None:
-        return await m.answer("No matching fee bracket for that amount.", reply_markup=menu_keyboard())
+    fee_k, (lo, hi) = fee_for_kw(base_k)
+    total_k = base_k + fee_k
 
-    total_k_to_send = base_k + fee_k
-    lo, hi = bracket
-
-    txt = (
-        header("✅ Quote — K to send (RUB payout)") +
-        calc_block([
-            ("Recipient gets",     fmt_money(want_rub, "RUB")),
-            ("Base K needed",      fmt_money(base_k, "K")),
-            ("Fee",                f"{fmt_money(fee_k,'K')}  (bracket {lo:,}–{hi:,} K)"),
-            ("You send (K)",       fmt_money(total_k_to_send, "K")),
-            ("Rate used",          f"1 ZMW = {rub_per_zmw:.4f} RUB (Google)"),
-            ("Updated",            updated),
-        ]) +
-        "\nUse the buttons below for another quote."
+    message_text = (
+        f"CLIENT wants to receive {fmt_money(want_rub,'RUB')}.\n\n"
+        f"Equivalent in Kwacha: {fmt_money(base_k,'ZMW')}\n"
+        f"Transfer fee: {fmt_money(fee_k,'ZMW')} (because your amount is in the {lo:,}–{hi:,} range)\n"
+        f"Total to send: {fmt_money(total_k,'ZMW')} including the fee\n"
+        f"Exchange rate used: 1 ZMW = {rub_per_zmw:.4f} RUB\n"
+        f"Updated: {updated}\n\n"
+        f"Click below to open WhatsApp to initiate the transaction 👇"
     )
+
+    encoded = urllib.parse.quote(message_text)
+    wa_link = f"https://wa.me/{AGENT_PHONE.replace('+','')}?text={encoded}"
+
     await state.clear()
-    await m.answer(txt, reply_markup=menu_keyboard())
+    await m.answer(message_text + f"\n\n👉 <a href='{wa_link}'>Contact agent on WhatsApp</a>", reply_markup=menu_keyboard())
 
-# Slash commands mirror buttons (optional)
-@dp.message(Command("rate"))
-async def cmd_rate(m: types.Message, state: FSMContext):
-    return await google_rate(m, state)
-
-@dp.message(Command("fees"))
-async def cmd_fees(m: types.Message, state: FSMContext):
-    return await fees(m, state)
-
-@dp.message(Command("debug_link"))
-async def cmd_debug_link(m: types.Message):
-    return await m.answer(f"CSV URL:\n{CSV_URL}")
-
-# -------------------- Webhook server --------------------
+# -------------------- Webhook --------------------
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(bot=bot, update=update)  # aiogram expects bot + update
+    await dp.feed_update(bot=bot, update=update)
     return web.Response()
 
 async def on_startup(app):
-    webhook_url = f"{BASE_URL}/{TOKEN}"
-    await bot.set_webhook(webhook_url)
+    await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
 
 async def on_cleanup(app):
     await bot.session.close()
