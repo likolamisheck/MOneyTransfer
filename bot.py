@@ -6,10 +6,9 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -35,8 +34,6 @@ FEE_BRACKETS = [
     (100,450,25),(500,1500,50),(1600,3400,100),(3500,6400,150),
     (6500,10000,325),(10001,15000,500),(15001,20000,700),(20001,40000,1000)
 ]
-MIN_K = FEE_BRACKETS[0][0]
-MAX_K = FEE_BRACKETS[-1][1]
 
 def fee_for_kw(amount_k: float):
     for lo, hi, fee in FEE_BRACKETS:
@@ -59,13 +56,18 @@ def derive_csv_url(url: str) -> str:
     path = parsed.path
     q = dict(urllib.parse.parse_qsl(parsed.query))
     if "/spreadsheets/d/e/" in path and "/pubhtml" in path:
-        path = path.replace("/pubhtml","/pub"); q["output"]="csv"; new_q=urllib.parse.urlencode(q)
+        path = path.replace("/pubhtml","/pub")
+        q["output"]="csv"
+        new_q=urllib.parse.urlencode(q)
         return urllib.parse.urlunparse(parsed._replace(path=path,query=new_q))
     if "/spreadsheets/d/e/" in path and "/pub" in path:
-        q["output"]="csv"; new_q=urllib.parse.urlencode(q)
+        q["output"]="csv"
+        new_q=urllib.parse.urlencode(q)
         return urllib.parse.urlunparse(parsed._replace(query=new_q))
     m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", path)
-    if m: sheet_id = m.group(1); gid = q.get("gid","0")
+    if m:
+        sheet_id = m.group(1)
+        gid = q.get("gid","0")
         return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
     return url
 
@@ -84,11 +86,11 @@ async def fetch_rate_from_sheet():
         return rub_per_zmw, updated
 
 # UI helpers
-def menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("📈 Google rate")],
-                  [KeyboardButton("💸 Receive Kwacha"),KeyboardButton("💶 Receive Rubles")],
-                  [KeyboardButton("ℹ️ Fees")]],
+def menu_keyboard() -> types.ReplyKeyboardMarkup:
+    return types.ReplyKeyboardMarkup(
+        keyboard=[[types.KeyboardButton("📈 Google rate")],
+                  [types.KeyboardButton("💸 Receive Kwacha"),types.KeyboardButton("💶 Receive Rubles")],
+                  [types.KeyboardButton("ℹ️ Fees")]],
         resize_keyboard=True, input_field_placeholder="Choose an option…",
         selective=False, is_persistent=True
     )
@@ -103,28 +105,29 @@ class Form(StatesGroup):
     waiting_rub_amount = State()
 
 # Bot setup
-bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 
 # Handlers
 @dp.message(Command("start"))
-async def start_cmd(m:Message,state:FSMContext):
+async def start_cmd(m:types.Message,state:FSMContext):
     await state.clear()
     text = header("🚀 MONEY TRANSFER — Quick Menu") + \
            "• 📈 Google rate\n• 💸 Receive Kwacha\n• 💶 Receive Rubles\n• ℹ️ Fees\n"
     await m.answer(text, reply_markup=menu_keyboard())
 
 @dp.message(F.text=="ℹ️ Fees")
-async def fees(m:Message,state:FSMContext):
+async def fees(m:types.Message,state:FSMContext):
     await state.clear()
     lines = ["<b>📋 Fee table (Kwacha)</b>"]
     for lo,hi,fee in FEE_BRACKETS: lines.append(f"{lo:,}–{hi:,} K → <b>{fee:,} K</b>")
     await m.answer("\n".join(lines),reply_markup=menu_keyboard())
 
 @dp.message(F.text=="📈 Google rate")
-async def google_rate(m:Message,state:FSMContext):
+async def google_rate(m:types.Message,state:FSMContext):
     await state.clear()
-    try: rub_per_zmw,updated = await fetch_rate_from_sheet()
+    try:
+        rub_per_zmw,updated = await fetch_rate_from_sheet()
     except Exception as e:
         print("[rate fetch error]",repr(e))
         return await m.answer("Sorry, could not fetch rate.",reply_markup=menu_keyboard())
@@ -140,12 +143,15 @@ async def google_rate(m:Message,state:FSMContext):
 # Webhook
 async def handle(request):
     data = await request.json()
-    update = Update.to_object(data)
+    update = types.Update(**data)
     await dp.feed_update(update)
     return web.Response()
 
-async def on_startup(app): await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
-async def on_cleanup(app): await bot.session.close()
+async def on_startup(app):
+    await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
+
+async def on_cleanup(app):
+    await bot.session.close()
 
 app = web.Application()
 app.router.add_post(f"/{TOKEN}",handle)
