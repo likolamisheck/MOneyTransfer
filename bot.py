@@ -1,6 +1,5 @@
 import os
 import math
-import asyncio
 import re
 import urllib.parse
 from datetime import datetime, timezone
@@ -86,11 +85,15 @@ async def fetch_rate_from_sheet():
 # UI helpers
 def menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("📈 Google rate")],
-                  [KeyboardButton("💸 Receive Kwacha"),KeyboardButton("💶 Receive Rubles")],
-                  [KeyboardButton("ℹ️ Fees")]],
-        resize_keyboard=True, input_field_placeholder="Choose an option…",
-        selective=False, is_persistent=True
+        keyboard=[
+            [KeyboardButton(text="📈 Google rate")],
+            [KeyboardButton(text="💸 Receive Kwacha"), KeyboardButton(text="💶 Receive Rubles")],
+            [KeyboardButton(text="ℹ️ Fees")]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Choose an option…",
+        selective=False,
+        is_persistent=True
     )
 
 def header(title:str) -> str: return f"<b>{title}</b>\n"
@@ -119,15 +122,15 @@ async def fees(m:Message,state:FSMContext):
     await state.clear()
     lines = ["<b>📋 Fee table (Kwacha)</b>"]
     for lo,hi,fee in FEE_BRACKETS: lines.append(f"{lo:,}–{hi:,} K → <b>{fee:,} K</b>")
-    await m.answer("\n".join(lines),reply_markup=menu_keyboard())
+    await m.answer("\n".join(lines), reply_markup=menu_keyboard())
 
 @dp.message(F.text=="📈 Google rate")
 async def google_rate(m:Message,state:FSMContext):
     await state.clear()
-    try: rub_per_zmw,updated = await fetch_rate_from_sheet()
+    try: rub_per_zmw, updated = await fetch_rate_from_sheet()
     except Exception as e:
-        print("[rate fetch error]",repr(e))
-        return await m.answer("Sorry, could not fetch rate.",reply_markup=menu_keyboard())
+        print("[rate fetch error]", repr(e))
+        return await m.answer("Sorry, could not fetch rate.", reply_markup=menu_keyboard())
     zmw_per_rub = 1.0/rub_per_zmw if rub_per_zmw else math.inf
     txt = header("📈 Current Google rate")+calc_block([
         ("1 ZMW → RUB",f"{rub_per_zmw:.4f}"),
@@ -135,17 +138,20 @@ async def google_rate(m:Message,state:FSMContext):
         ("Updated",updated),
         ("Source","Google Sheet (CSV)")
     ])
-    await m.answer(txt,reply_markup=menu_keyboard())
+    await m.answer(txt, reply_markup=menu_keyboard())
 
 # Webhook
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(bot, update)  # <-- fix for aiogram 3.x
+    await dp.feed_update(bot=bot, update=update)
     return web.Response()
 
-async def on_startup(app): await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
-async def on_cleanup(app): await bot.session.close()
+async def on_startup(app): 
+    await bot.set_webhook(f"{BASE_URL}/{TOKEN}")
+
+async def on_cleanup(app): 
+    await bot.session.close()
 
 app = web.Application()
 app.router.add_post(f"/{TOKEN}", handle)
